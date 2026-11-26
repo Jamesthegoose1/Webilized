@@ -1,1 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Qwen3-4B // Local WebGPU</title>
+  <style>
+    :root {
+      --bg: #0d0f12;
+      --surface: #15181e;
+      --border: #262b36;
+      --text: #e6e9ef;
+      --muted: #8b949e;
+      --accent: #3b82f6;
+      --think-bg: #11141a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 1.5rem;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      line-height: 1.6;
+      max-width: 860px;
+      margin-inline: auto;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.75rem;
+      margin-bottom: 1rem;
+      font-size: 0.85rem;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .header-left a {
+      color: var(--muted);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.78rem;
+    }
+    .header-left a:hover {
+      color: var(--text);
+      border-color: var(--accent);
+    }
+    .badge {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 0.2rem 0.55rem;
+      border-radius: 4px;
+      color: var(--muted);
+    }
+    form {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+    }
+    input[type="text"] {
+      flex: 1;
+      min-width: 220px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.65rem 0.85rem;
+      border-radius: 6px;
+      font: inherit;
+      outline: none;
+    }
+    input[type="text"]:focus { border-color: var(--accent); }
+    button, label.toggle {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.65rem 0.9rem;
+      border-radius: 6px;
+      font: inherit;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      user-select: none;
+    }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .progress-wrap {
+      width: 100%;
+      height: 4px;
+      background: var(--surface);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 0.5rem;
+      display: none;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      transition: width 0.15s ease;
+    }
+    #status {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+      min-height: 1.2em;
+    }
+    details#think-box {
+      display: none;
+      background: var(--think-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 0.9rem;
+      margin-bottom: 1rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    details#think-box summary { cursor: pointer; font-weight: 600; }
+    #think-content {
+      white-space: pre-wrap;
+      margin-top: 0.5rem;
+      border-top: 1px solid var(--border);
+      padding-top: 0.5rem;
+    }
+    #output {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem 1.2rem;
+      white-space: pre-wrap;
+      min-height: 140px;
+      word-break: break-word;
+    }
+    body.raw-mode { padding: 0.75rem; max-width: 100%; }
+    body.raw-mode header,
+    body.raw-mode form,
+    body.raw-mode .progress-wrap,
+    body.raw-mode #status,
+    body.raw-mode #think-box { display: none !important; }
+    body.raw-mode #output {
+      background: transparent;
+      border: none;
+      padding: 0;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <a href="../" title="Back to root">← Home</a>
+      <div><strong>QWEN3-4B</strong> // LOCAL WEBGPU</div>
+    </div>
+    <div style="display:flex; gap:0.5rem; align-items:center;">
+      <button type="button" id="copy-link-btn" title="Copy shareable query URL">Copy URL</button>
+      <div class="badge" id="perf">Idle</div>
+    </div>
+  </header>
 
+  <form id="query-form">
+    <input type="text" id="prompt-input" placeholder="Ask Qwen3-4B (or pass ?q=... in URL)..." autocomplete="off" />
+    <label class="toggle" title="Enable Qwen3 <think> reasoning block">
+      <input type="checkbox" id="think-toggle" /> Think
+    </label>
+    <button type="submit" id="run-btn" disabled>Run</button>
+  </form>
+
+  <div class="progress-wrap" id="progress-wrap">
+    <div class="progress-bar" id="progress-bar"></div>
+  </div>
+  <div id="status">Checking WebGPU support...</div>
+
+  <details id="think-box" open>
+    <summary>Reasoning Trace</summary>
+    <div id="think-content"></div>
+  </details>
+
+  <div id="output"></div>
+
+  <script type="module">
+    import { CreateMLCEngine } from "https://esm.run/@mlc-ai/web-llm";
+
+    const MODEL_ID = "Qwen3-4B-q4f16_1-MLC";
+
+    // Parse both ?q=... and #q=... so hash links and search params both work
+    function getUnifiedParams() {
+      const searchParams = new URLSearchParams(window.location.search);
+      const hashStr = window.location.hash.startsWith("#")
+        ? window.location.hash.slice(1)
+        : "";
+      const hashParams = new URLSearchParams(hashStr.includes("=") ? hashStr : "");
+      for (const [k, v] of hashParams.entries()) {
+        if (!searchParams.has(k)) searchParams.set(k, v);
+      }
+      return searchParams;
+    }
+
+    const params = getUnifiedParams();
+    const initialQuery = params.get("q") || params.get("prompt") || "";
+    const enableThinking = params.get("think") === "1" || params.get("think") === "true";
+    const isRaw = params.get("raw") === "1";
+    const customSys = params.get("sys");
+    const customTemp = params.get("temp") ? parseFloat(params.get("temp")) : null;
+
+    if (isRaw) document.body.classList.add("raw-mode");
+
+    const promptInput = document.getElementById("prompt-input");
+    const thinkToggle = document.getElementById("think-toggle");
+    const runBtn = document.getElementById("run-btn");
+    const copyLinkBtn = document.getElementById("copy-link-btn");
+    const progressWrap = document.getElementById("progress-wrap");
+    const progressBar = document.getElementById("progress-bar");
+    const statusEl = document.getElementById("status");
+    const perfEl = document.getElementById("perf");
+    const thinkBox = document.getElementById("think-box");
+    const thinkContent = document.getElementById("think-content");
+    const outputEl = document.getElementById("output");
+
+    promptInput.value = initialQuery;
+    thinkToggle.checked = enableThinking;
+
+    let engine = null;
+    let isGenerating = false;
+
+    async function initEngine() {
+      if (!navigator.gpu) {
+        const msg = "Error: WebGPU is not supported in this browser (requires Chrome/Edge 113+ or Safari 18+).";
+        statusEl.textContent = msg;
+        if (isRaw) outputEl.textContent = msg;
+        return;
+      }
+
+      progressWrap.style.display = "block";
+
+      try {
+        engine = await CreateMLCEngine(MODEL_ID, {
+          initProgressCallback: (report) => {
+            statusEl.textContent = report.text;
+            if (typeof report.progress === "number") {
+              progressBar.style.width = `${Math.round(report.progress * 100)}%`;
+            }
+          }
+        });
+        progressWrap.style.display = "none";
+        statusEl.textContent = "Qwen3-4B cached & ready in VRAM.";
+        runBtn.disabled = false;
+
+        if (initialQuery.trim()) {
+          await runQuery(initialQuery.trim(), thinkToggle.checked);
+        }
+      } catch (err) {
+        progressWrap.style.display = "none";
+        statusEl.textContent = `Init Error: ${err.message}`;
+        if (isRaw) outputEl.textContent = `Error: ${err.message}`;
+      }
+    }
+
+    async function runQuery(prompt, think) {
+      if (!engine || isGenerating) return;
+      isGenerating = true;
+      runBtn.disabled = true;
+      outputEl.textContent = "";
+      thinkContent.textContent = "";
+      thinkBox.style.display = "none";
+
+      // Keeps /<repo>/models/qwen-3-4b.html intact while updating query params
+      const nextUrl = new URL(window.location.href);
+      nextUrl.hash = "";
+      nextUrl.searchParams.set("q", prompt);
+      nextUrl.searchParams.set("think", think ? "1" : "0");
+      window.history.replaceState({}, "", nextUrl.pathname + nextUrl.search);
+
+      const sysPrompt = customSys || (
+        think
+          ? "You are a sharp, accurate local assistant. Think step-by-step before answering concisely."
+          : "You are a sharp, accurate local assistant. Answer directly and concisely. /no_think"
+      );
+
+      const temperature = customTemp ?? (think ? 0.6 : 0.7);
+      const top_p = think ? 0.95 : 0.8;
+
+      const messages = [
+        { role: "system", content: sysPrompt },
+        { role: "user", content: prompt }
+      ];
+
+      const t0 = performance.now();
+      let tokenCount = 0;
+      let fullText = "";
+
+      try {
+        statusEl.textContent = "Generating...";
+        const chunks = await engine.chat.completions.create({
+          messages,
+          temperature,
+          top_p,
+          stream: true,
+          extra_body: { enable_thinking: think }
+        });
+
+        for await (const chunk of chunks) {
+          const delta = chunk.choices[0]?.delta?.content || "";
+          if (!delta) continue;
+          fullText += delta;
+          tokenCount++;
+
+          const thinkStart = fullText.indexOf("<think>");
+          const thinkEnd = fullText.indexOf("</think>");
+
+          if (thinkStart !== -1) {
+            thinkBox.style.display = "block";
+            if (thinkEnd !== -1) {
+              thinkContent.textContent = fullText.slice(thinkStart + 7, thinkEnd).trim();
+              outputEl.textContent = fullText.slice(thinkEnd + 8).trimStart();
+            } else {
+              thinkContent.textContent = fullText.slice(thinkStart + 7).trim();
+            }
+          } else {
+            outputEl.textContent = fullText;
+          }
+
+          const elapsedSec = (performance.now() - t0) / 1000;
+          perfEl.textContent = `${(tokenCount / elapsedSec).toFixed(1)} tok/s`;
+        }
+
+        const totalSec = ((performance.now() - t0) / 1000).toFixed(2);
+        statusEl.textContent = `Done in ${totalSec}s (${tokenCount} chunks).`;
+      } catch (err) {
+        statusEl.textContent = `Generation Error: ${err.message}`;
+      } finally {
+        isGenerating = false;
+        runBtn.disabled = false;
+      }
+    }
+
+    document.getElementById("query-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const q = promptInput.value.trim();
+      if (q) runQuery(q, thinkToggle.checked);
+    });
+
+    copyLinkBtn.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(window.location.href);
+      const prev = copyLinkBtn.textContent;
+      copyLinkBtn.textContent = "Copied!";
+      setTimeout(() => (copyLinkBtn.textContent = prev), 1500);
+    });
+
+    initEngine();
+  </script>
+</body>
+</html>
