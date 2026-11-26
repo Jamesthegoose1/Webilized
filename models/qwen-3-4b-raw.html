@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Qwen3 Raw</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #0d0f12;
+      color: #e6e9ef;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body><script type="module">
+  import { CreateWebWorkerMLCEngine } from "https://esm.run/@mlc-ai/web-llm";
+
+  const params = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(
+    window.location.hash.startsWith("#") && window.location.hash.includes("=")
+      ? window.location.hash.slice(1)
+      : ""
+  );
+  for (const [k, v] of hashParams.entries()) {
+    if (!params.has(k)) params.set(k, v);
+  }
+
+  const prompt = (params.get("q") || params.get("prompt") || "").trim();
+  const think = params.get("think") === "1" || params.get("think") === "true";
+  const modelId = params.get("model") || "Qwen3-4B-q4f16_1-MLC";
+  const contextSize = parseInt(params.get("ctx") || "4096", 10);
+  const customSys = params.get("sys");
+  const customTemp = params.get("temp") ? parseFloat(params.get("temp")) : null;
+
+  const out = document.body;
+
+  if (!prompt) {
+    out.textContent = "Error: Missing ?q= parameter";
+    throw new Error("Missing ?q=");
+  }
+
+  if (!navigator.gpu) {
+    out.textContent = "Error: WebGPU unsupported";
+    throw new Error("WebGPU unsupported");
+  }
+
+  const workerBlob = new Blob([`
+    import { WebWorkerMLCEngineHandler } from "https://esm.run/@mlc-ai/web-llm";
+    const handler = new WebWorkerMLCEngineHandler();
+    self.onmessage = (msg) => handler.onmessage(msg);
+  `], { type: "application/javascript" });
+
+  try {
+    const worker = new Worker(URL.createObjectURL(workerBlob), { type: "module" });
+    const engine = await CreateWebWorkerMLCEngine(worker, modelId, {
+      chatOpts: { context_window_size: contextSize }
+    });
+
+    const sysPrompt = customSys || (
+      think
+        ? "You are a sharp, accurate assistant. Think step-by-step before answering concisely."
+        : "You are a sharp, accurate assistant. Answer directly and concisely without extra commentary. /no_think"
+    );
+
+    const chunks = await engine.chat.completions.create({
+      messages: [
+        { role: "system", content: sysPrompt },
+        { role: "user", content: prompt }
+      ],
+      temperature: customTemp ?? (think ? 0.6 : 0.7),
+      top_p: think ? 0.95 : 0.8,
+      max_tokens: Math.min(2048, contextSize - 512),
+      stream: true,
+      extra_body: { enable_thinking: think }
+    });
+
+    let fullText = "";
+    for await (const chunk of chunks) {
+      const delta = chunk.choices[0]?.delta?.content || "";
+      if (!delta) continue;
+      fullText += delta;
+
+      // Strip <think>...</think> tags so only the final answer is rendered
+      const thinkEnd = fullText.indexOf("</think>");
+      if (thinkEnd !== -1) {
+        out.textContent = fullText.slice(thinkEnd + 8).trimStart();
+      } else if (!fullText.includes("<think>")) {
+        out.textContent = fullText;
+      }
+    }
+  } catch (err) {
+    out.textContent = `Error: ${err.message}`;
+  }
+</script></body>
+</html>
